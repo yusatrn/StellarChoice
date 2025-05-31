@@ -2,6 +2,18 @@
 
 import React, { useState, useEffect } from "react";
 import * as freighterApi from '@stellar/freighter-api';
+import { 
+  xdr,
+  scValToNative,
+  nativeToScVal,
+  StrKey
+} from '@stellar/stellar-sdk'; 
+import { 
+  callContractFunction, 
+  sendTransaction, 
+  getTransactionStatus 
+} from '../lib/contractHelper';
+
 
 interface Candidate {
   id: number;
@@ -13,55 +25,96 @@ interface Candidate {
 export default function Voting() {
   const [selectedCandidate, setSelectedCandidate] = useState<number | null>(null);
   const [isVoting, setIsVoting] = useState(false);
-  // Initialize voted state from localStorage
   const [voted, setVoted] = useState(false);
   const [userAddress, setUserAddress] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([
     {
-      id: 1,
+      id: 0, // Sözleşmede 0'dan başladığı için güncellendi
       name: "Proje A",
       description: "Yenilenebilir Enerji Çözümleri",
       voteCount: 0,
     },
     {
-      id: 2,
+      id: 1,
       name: "Proje B",
       description: "Eğitim Teknolojileri Platformu",
       voteCount: 0,
     },
     {
-      id: 3,
+      id: 2,
       name: "Proje C",
       description: "Sağlık Hizmetleri İnovasyonu",
       voteCount: 0,
     },
   ]);
   
-  // Load voted status and vote counts from localStorage on component mount
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      // Load user's vote status
-      const hasVoted = localStorage.getItem('userHasVoted') === 'true';
-      setVoted(hasVoted);
-      
-      // Load candidate vote counts
-      const savedCounts = localStorage.getItem('candidateVoteCounts');
-      if (savedCounts) {
+  // Adayların oy sayılarını yükle
+  const loadVoteCounts = async () => {
+    if (!userAddress) return;
+    
+    try {
+      const updatedCandidates = [...candidates];
+      for (let i = 0; i < updatedCandidates.length; i++) {
         try {
-          const parsedCounts = JSON.parse(savedCounts);
-          setCandidates(prev => prev.map(candidate => ({
-            ...candidate,
-            voteCount: parsedCounts[candidate.id] || 0
-          })));
+          const result = await callContractFunction(
+            'get_vote_count',
+            [u32ToScVal(i)],
+            userAddress
+          );
+          const count = scValToValue(result);
+          updatedCandidates[i] = {
+            ...updatedCandidates[i],
+            voteCount: Number(count) || 0
+          };
         } catch (error) {
-          console.error('Error parsing saved vote counts:', error);
+          console.error(`Aday ${i} için oy yüklenirken hata:`, error);
+          // Hata durumunda oy sayısını sıfırla
+          updatedCandidates[i] = {
+            ...updatedCandidates[i],
+            voteCount: 0
+          };
         }
       }
-      
-      // Check current wallet address
-      checkWalletConnection();
+      setCandidates(updatedCandidates);
+    } catch (error) {
+      console.error('Oy sayıları yüklenirken hata:', error);
     }
-  }, []);
+  };
+
+  // Kullanıcının oy kullanıp kullanmadığını kontrol et
+  const checkUserVoteStatus = async (address: string) => {
+    if (!address) return false;
+    
+    try {
+      const result = await callContractFunction(
+        'has_voted',
+        [addressToScVal(address)],
+        address
+      );
+      const hasVotedStatus = Boolean(scValToValue(result));
+      setVoted(hasVotedStatus);
+      return hasVotedStatus;
+    } catch (error) {
+      console.error('Oy durumu kontrol edilirken hata:', error);
+      setVoted(false);
+      return false;
+    }
+  };
+
+  // Bileşen yüklendiğinde verileri yükle
+  useEffect(() => {
+    const loadData = async () => {
+      const address = await checkWalletConnection();
+      if (address) {
+        await Promise.all([
+          loadVoteCounts(),
+          checkUserVoteStatus(address)
+        ]);
+      }
+    };
+    
+    loadData();
+  }, [userAddress]);
   
   // Check wallet connection and update state
   const checkWalletConnection = async () => {
@@ -76,82 +129,109 @@ export default function Voting() {
         
         if (address) {
           setUserAddress(address);
-          
-          // Check if this specific address has voted
-          const addressHasVoted = localStorage.getItem(`address_${address}_voted`) === 'true';
-          if (addressHasVoted) {
-            setVoted(true);
-          }
+          return address;
         }
       }
+      return null;
     } catch (error) {
       console.error('Error checking wallet connection:', error);
+      return null;
+    }
+  };
+
+  // Adresi ScVal'a dönüştür
+  const addressToScVal = (address: string): xdr.ScVal => {
+    // Stellar adresini binary'ye çevir
+    const publicKey = StrKey.decodeEd25519PublicKey(address);
+    return xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(publicKey)
+      )
+    );
+  };
+
+  // Sayıyı ScVal'a dönüştür
+  const u32ToScVal = (value: number): xdr.ScVal => {
+    return xdr.ScVal.scvU32(value);
+  };
+
+  // ScVal'dan değer çıkar
+  const scValToValue = (val: any): any => {
+    try {
+      if (val === null || val === undefined) return val;
+      return scValToNative(val);
+    } catch (error) {
+      console.error('Error converting ScVal:', error, val);
+      return val;
     }
   };
 
   const handleVote = async () => {
-    if (selectedCandidate === null) return;
+    if (selectedCandidate === null) {
+      alert("Lütfen bir aday seçin");
+      return;
+    }
 
     try {
       setIsVoting(true);
       
-      // Check if Freighter is connected using the official API
-      const isConnected = await freighterApi.isConnected();
-      
-      if (!isConnected) {
+      // Cüzdan bağlantısını kontrol et ve adresi al
+      const address = await checkWalletConnection();
+      if (!address) {
         alert("Lütfen önce cüzdanınızı bağlayın!");
         return;
       }
 
-      // Get the address and network from Freighter using official API
-      const addressResponse = await freighterApi.getAddress();
-      const networkResponse = await freighterApi.getNetwork();
-      
-      // Handle the response which could be a string or an object
-      const address = typeof addressResponse === 'string' ? addressResponse : (addressResponse as any)?.address;
-      const network = typeof networkResponse === 'string' ? networkResponse : (networkResponse as any)?.network;
-      
-      if (!address) {
-        alert("Could not get wallet address");
-        return;
+      try {
+        // Daha önce oy kullanıp kullanmadığını kontrol et
+        const hasVotedResult = await callContractFunction(
+          'has_voted',
+          [addressToScVal(address)],
+          address
+        );
+        
+        const hasUserVoted = scValToValue(hasVotedResult);
+        if (hasUserVoted) {
+          alert("Zaten oy kullandınız!");
+          setVoted(true);
+          return;
+        }
+
+        // Oy verme işlemini gerçekleştir
+        await callContractFunction(
+          'vote',
+          [
+            addressToScVal(address),
+            u32ToScVal(selectedCandidate)
+          ],
+          address
+        );
+
+        // Başarılı olduğunda oy sayısını güncelle
+        const voteCountResult = await callContractFunction(
+          'get_vote_count',
+          [u32ToScVal(selectedCandidate)],
+          address
+        );
+        
+        const newVoteCount = scValToValue(voteCountResult);
+        
+        // Arayüzü güncelle
+        setCandidates(prev => prev.map(c => 
+          c.id === selectedCandidate 
+            ? { ...c, voteCount: newVoteCount } 
+            : c
+        ));
+        
+        setVoted(true);
+        alert("Oyunuz başarıyla kaydedildi!");
+      } catch (error) {
+        console.error('Oylama sırasında hata:', error);
+        throw error; // Hata yönetimi için yukarı fırlat
       }
-      
-      console.log(`Voting for candidate ${selectedCandidate} from ${address} on ${network}`);
-      
-      // In a real app, you would interact with your Soroban contract here
-      // For now, we'll simulate a successful vote after a short delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Update local state
-      const updatedCandidates = candidates.map(cand => 
-        cand.id === selectedCandidate 
-          ? { ...cand, voteCount: cand.voteCount + 1 } 
-          : cand
-      );
-      
-      setCandidates(updatedCandidates);
-      setVoted(true);
-      
-      // Save vote status to localStorage
-      localStorage.setItem('userHasVoted', 'true');
-      
-      // Save vote counts to localStorage
-      const voteCounts = updatedCandidates.reduce((acc, candidate) => {
-        acc[candidate.id] = candidate.voteCount;
-        return acc;
-      }, {} as Record<number, number>);
-      
-      localStorage.setItem('candidateVoteCounts', JSON.stringify(voteCounts));
-      
-      // If user has a connected wallet, save their specific vote status
-      if (userAddress) {
-        localStorage.setItem(`address_${userAddress}_voted`, 'true');
-      }
-      
-      alert("Oyunuz başarıyla kaydedildi!");
     } catch (error) {
-      console.error("Voting error:", error);
-      alert("Oylama sırasında bir hata oluştu. Lütfen tekrar deneyin.");
+      console.error("Oylama hatası:", error);
+      alert(`Oylama sırasında bir hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
     } finally {
       setIsVoting(false);
     }
