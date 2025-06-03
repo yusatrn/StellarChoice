@@ -2,6 +2,14 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
+  // GitHub Pages configuration
+  output: 'export',
+  basePath: '/StellarChoice',
+  images: {
+    unoptimized: true,
+  },
+  trailingSlash: true,
+
   // Allow browser extensions to inject scripts and inline styles
   async headers() {
     return [
