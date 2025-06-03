@@ -356,7 +356,7 @@ export async function callContractFunction(
           if (simulation.minResourceFee) {
             sorobanData.setResourceFee(simulation.minResourceFee.toString());
           }
-          xdrData = sorobanData.build().toXDR();
+          xdrData = sorobanData.build().toXDR('base64');
         }
         // If it's an object with a toXDR method, use that
         else if (simulation.transactionData && typeof (simulation.transactionData as any).toXDR === 'function') {
