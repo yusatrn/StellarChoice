@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build --no-lint --no-check",
+    "build": "next build",
+    "build:gh-pages": "NEXT_IGNORE_TS_ERRORS=true next build --no-lint",
     "start": "next start",
     "lint": "next lint"
   },
