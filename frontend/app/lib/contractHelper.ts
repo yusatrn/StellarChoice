@@ -373,7 +373,7 @@ export async function callContractFunction(
             sorobanData.setResourceFee(simulation.minResourceFee.toString());
           }
           
-          xdrData = sorobanData.build().toXDR();
+          xdrData = sorobanData.build().toXDR('base64');
         }
         
         console.log('Setting Soroban data with XDR:', xdrData);
